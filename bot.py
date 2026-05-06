@@ -20,7 +20,7 @@ def get_today():
     return days[now.weekday()]
 
 # --- НАСТРОЙКИ БОТА ---
-TOKEN = os.environ.get('TELEGRAM_TOKEN')
+TOKEN = '8798484496:AAFXcnWcdKVv3RE31DqN4CKOQUZ47hqhpvs'
 DATA_FILE = 'class_db.json'
 ADMIN_IDS = [1701265587]  
 
