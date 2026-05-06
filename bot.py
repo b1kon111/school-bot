@@ -29,8 +29,8 @@ bot = telebot.TeleBot(TOKEN)
 # --- СПИСОК ВСЕХ КНОПОК МЕНЮ (для защиты ввода) ---
 MENU_BUTTONS = [
     "📝 Отметиться", "👤 Профиль", "🆘 Помощь", 
-    "✏️ Панель старосты", "✏️ Отметить ученика", 
-    "➕ Добавить ученика", "📊 Статистика", 
+    "✏️ Панель старосты", "📋 Список класса", "✏️ Отметить ученика", 
+    "🗑️ Удалить ученика", "✏️ Редактировать ученика", "➕ Добавить ученика", "📊 Статистика", 
     "⬅️ Назад в меню", "⬅️ Назад"
 ]
 
@@ -83,8 +83,8 @@ def get_student_menu():
 def get_admin_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("📝 Отметиться", "👤 Профиль")
-    markup.add("✏️ Панель старосты") 
-    # УБРАЛИ: "📋 Список класса"
+    markup.add("✏️ Панель старосты")
+    markup.add("📋 Список класса")
     markup.add("🆘 Помощь")
     return markup
 
@@ -134,14 +134,28 @@ def show_profile(message):
 
     for day, data in db['attendance'].items():
         if uid in data:
-            if data[uid] == 'present': total_present += 1
-            elif data[uid] == 'absent': total_absent += 1
-            elif data[uid] == 'late': total_late += 1
+            entry = data[uid]
+            if isinstance(entry, dict):
+                status = entry.get('status')
+                reason = entry.get('reason')
+            else:
+                status = entry
+                reason = None
+
+            if status == 'present': total_present += 1
+            elif status == 'absent': total_absent += 1
+            elif status == 'late': total_late += 1
 
             if day == today:
-                if data[uid] == 'present': today_status = "✅ Присутствует"
-                elif data[uid] == 'absent': today_status = "❌ Отсутствует"
-                elif data[uid] == 'late': today_status = "⏰ Опоздал"
+                if status == 'present': today_status = "✅ Присутствует"
+                elif status == 'absent':
+                    today_status = "❌ Отсутствует"
+                    if reason:
+                        today_status += f"\nПричина: {reason}"
+                elif status == 'late':
+                    today_status = "⏰ Опоздал"
+                    if reason:
+                        today_status += f"\nПричина: {reason}"
 
     profile_text = f"👤 <b>Профиль: {fio}</b>\n\n"
     profile_text += f"📅 Статус сегодня: {today_status}\n\n"
@@ -201,8 +215,9 @@ def set_student_status(message):
         "⏰ Я опоздаю": "late"
     }
 
+    status = status_map[message.text]
     if day not in db['attendance']: db['attendance'][day] = {}
-    db['attendance'][day][uid] = status_map[message.text]
+    db['attendance'][day][uid] = {"status": status}
     save_db(db)
 
     text_map = {
@@ -211,8 +226,38 @@ def set_student_status(message):
         "late": "⏰ Ты отмечен как опоздавший."
     }
 
-    bot.send_message(message.chat.id, text_map[status_map[message.text]], 
+    if status in {"absent", "late"}:
+        msg = bot.send_message(message.chat.id, f"{text_map[status]}\n\n📝 Напиши причину {('опоздания' if status == 'late' else 'отсутствия')}:", reply_markup=types.ReplyKeyboardRemove())
+        bot.register_next_step_handler(msg, process_reason, day, uid)
+        return
+
+    bot.send_message(message.chat.id, text_map[status], 
                      reply_markup=get_admin_menu() if is_admin(uid) else get_student_menu())
+
+def process_reason(message, day, uid):
+    if message.text in MENU_BUTTONS:
+        bot.send_message(message.chat.id, "❌ Действие отменено.")
+        if is_admin(message.from_user.id):
+            admin_panel(message)
+        else:
+            bot.send_message(message.chat.id, "Меню:", reply_markup=get_student_menu())
+        return
+
+    reason = message.text.strip()
+    if not reason:
+        bot.send_message(message.chat.id, "⚠️ Пожалуйста, введи причину.")
+        return
+
+    db = load_db()
+    if day in db['attendance'] and uid in db['attendance'][day]:
+        entry = db['attendance'][day][uid]
+        if isinstance(entry, dict):
+            entry['reason'] = reason
+        else:
+            db['attendance'][day][uid] = {"status": entry, "reason": reason}
+        save_db(db)
+
+    bot.send_message(message.chat.id, f"✅ Причина сохранена: {reason}", reply_markup=get_admin_menu() if is_admin(uid) else get_student_menu())
 
 # --- ПАНЕЛЬ СТАРОСТЫ ---
 @bot.message_handler(func=lambda m: m.text == "✏️ Панель старосты")
@@ -220,8 +265,9 @@ def admin_panel(message):
     if not is_admin(message.from_user.id): return
 
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    # УБРАЛИ: "📋 Список класса"
     markup.add("✏️ Отметить ученика")
+    markup.add("📋 Список класса")
+    markup.add("🗑️ Удалить ученика", "✏️ Редактировать ученика")
     markup.add("➕ Добавить ученика", "📊 Статистика")
     markup.add("⬅️ Назад в меню")
     bot.send_message(message.chat.id, "👑 <b>Панель старосты</b>", reply_markup=markup, parse_mode='HTML')
@@ -302,6 +348,222 @@ def show_stats(message):
     report += f"❓ Не отметились: {total - marked}"
 
     bot.send_message(message.chat.id, report, parse_mode='HTML')
+
+# --- СПИСОК КЛАССА ---
+@bot.message_handler(func=lambda m: m.text == "📋 Список класса")
+def class_list(message):
+    if not is_admin(message.from_user.id): return
+
+    db = load_db()
+    day = get_today()
+    today_data = db['attendance'].get(day, {})
+    username_to_uid = {un: uid for uid, un in db['user_map'].items()}
+
+    lines = [f"📋 <b>Список класса на {day}:</b>"]
+    status_icons = {
+        'present': '✅ Присутствует',
+        'absent': '❌ Отсутствует',
+        'late': '⏰ Опоздал'
+    }
+
+    for username, fio in sorted(db['allowed_users'].items(), key=lambda x: x[1]):
+        uid = username_to_uid.get(username)
+        if uid and uid in today_data:
+            entry = today_data[uid]
+            if isinstance(entry, dict):
+                status = entry.get('status')
+                reason = entry.get('reason')
+            else:
+                status = entry
+                reason = None
+            status_text = status_icons.get(status, '❓ Не отмечался')
+            if reason and status in {'absent', 'late'}:
+                status_text += f" (Причина: {reason})"
+        elif uid:
+            status_text = '❓ Не отметился'
+        else:
+            status_text = '⚠️ Не запускал /start'
+
+        lines.append(f"• <b>{fio}</b> (@{username}) — {status_text}")
+
+    bot.send_message(message.chat.id, "\n".join(lines), parse_mode='HTML')
+
+# --- УДАЛЕНИЕ УЧЕНИКА ---
+@bot.message_handler(func=lambda m: m.text == "🗑️ Удалить ученика")
+def delete_student_start(message):
+    if not is_admin(message.from_user.id): return
+
+    db = load_db()
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    for username, fio in sorted(db['allowed_users'].items(), key=lambda x: x[1]):
+        markup.add(types.InlineKeyboardButton(text=fio, callback_data=f"delete_un_{username}"))
+
+    bot.send_message(message.chat.id, "Выбери ученика для удаления:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_un_'))
+def confirm_delete_student(call):
+    if not is_admin(call.from_user.id): return
+
+    username = call.data.split('_', 2)[2]
+    db = load_db()
+    fio = db['allowed_users'].get(username, username)
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("Удалить", callback_data=f"delete_confirm_{username}"))
+    markup.add(types.InlineKeyboardButton("Отмена", callback_data="cancel"))
+
+    bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id,
+                          text=f"Удалить ученика <b>{fio}</b> (@{username})?", reply_markup=markup, parse_mode='HTML')
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_confirm_'))
+def delete_student(call):
+    if not is_admin(call.from_user.id): return
+
+    username = call.data.split('_', 2)[2]
+    db = load_db()
+    fio = db['allowed_users'].pop(username, None)
+
+    for uid, un in list(db['user_map'].items()):
+        if un == username:
+            db['user_map'].pop(uid, None)
+            db['users'].pop(uid, None)
+            for day_data in db['attendance'].values():
+                day_data.pop(uid, None)
+
+    save_db(db)
+    bot.answer_callback_query(call.id, f"✅ Ученик {fio or username} удалён!")
+    bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id,
+                          text=f"✅ Ученик <b>{fio or username}</b> (@{username}) удалён.", parse_mode='HTML')
+
+@bot.callback_query_handler(func=lambda call: call.data == 'cancel')
+def cancel_action(call):
+    if not is_admin(call.from_user.id): return
+    bot.answer_callback_query(call.id, "Отменено")
+    bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id,
+                          text="Действие отменено.")
+
+# --- РЕДАКТИРОВАНИЕ УЧЕНИКА ---
+@bot.message_handler(func=lambda m: m.text == "✏️ Редактировать ученика")
+def edit_student_start(message):
+    if not is_admin(message.from_user.id): return
+
+    db = load_db()
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    for username, fio in sorted(db['allowed_users'].items(), key=lambda x: x[1]):
+        markup.add(types.InlineKeyboardButton(text=fio, callback_data=f"edit_un_{username}"))
+
+    bot.send_message(message.chat.id, "Выбери ученика для редактирования:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_un_'))
+def choose_edit_student(call):
+    if not is_admin(call.from_user.id): return
+
+    username = call.data.split('_', 2)[2]
+    db = load_db()
+    fio = db['allowed_users'].get(username, username)
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("Изменить юзернейм", callback_data=f"edit_username_{username}"))
+    markup.add(types.InlineKeyboardButton("Изменить ФИО", callback_data=f"edit_fio_{username}"))
+    markup.add(types.InlineKeyboardButton("Отмена", callback_data="cancel"))
+
+    bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id,
+                          text=f"Редактировать данные ученика <b>{fio}</b> (@{username})?", reply_markup=markup, parse_mode='HTML')
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_username_'))
+def ask_edit_username(call):
+    if not is_admin(call.from_user.id): return
+
+    username = call.data.split('_', 2)[2]
+    db = load_db()
+    fio = db['allowed_users'].get(username, username)
+
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id,
+                           f"Введи новый юзернейм для <b>{fio}</b> без символа @:", parse_mode='HTML')
+    bot.register_next_step_handler(msg, process_edit_username, username)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_fio_'))
+def ask_edit_fio(call):
+    if not is_admin(call.from_user.id): return
+
+    username = call.data.split('_', 2)[2]
+    db = load_db()
+    fio = db['allowed_users'].get(username, username)
+
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id,
+                           f"Введи новое ФИО для <b>{fio}</b> (@{username}):", parse_mode='HTML')
+    bot.register_next_step_handler(msg, process_edit_fio, username)
+
+
+def process_edit_username(message, old_username):
+    if message.text in MENU_BUTTONS:
+        bot.send_message(message.chat.id, "❌ Действие отменено.")
+        if is_admin(message.from_user.id):
+            admin_panel(message)
+        else:
+            bot.send_message(message.chat.id, "Меню:", reply_markup=get_student_menu())
+        return
+
+    new_username = message.text.replace('@', '').strip().lower()
+    if not new_username:
+        bot.send_message(message.chat.id, "⚠️ Неверный юзернейм. Попробуй ещё раз.")
+        return
+
+    db = load_db()
+    if new_username in db['allowed_users']:
+        bot.send_message(message.chat.id, "⚠️ Этот юзернейм уже используется.")
+        return
+
+    try:
+        bot.get_chat(f"@{new_username}")
+    except Exception:
+        bot.send_message(message.chat.id, "❌ Пользователь с таким юзернеймом не найден. Проверь опечатки.")
+        return
+
+    fio = db['allowed_users'].pop(old_username, None)
+    if fio is None:
+        bot.send_message(message.chat.id, "⚠️ Ученик не найден.")
+        return
+
+    db['allowed_users'][new_username] = fio
+    for uid, un in list(db['user_map'].items()):
+        if un == old_username:
+            db['user_map'][uid] = new_username
+    save_db(db)
+
+    bot.send_message(message.chat.id, f"✅ Юзернейм обновлён на @{new_username}")
+    admin_panel(message)
+
+
+def process_edit_fio(message, username):
+    if message.text in MENU_BUTTONS:
+        bot.send_message(message.chat.id, "❌ Действие отменено.")
+        if is_admin(message.from_user.id):
+            admin_panel(message)
+        else:
+            bot.send_message(message.chat.id, "Меню:", reply_markup=get_student_menu())
+        return
+
+    new_fio = message.text.strip()
+    if not new_fio:
+        bot.send_message(message.chat.id, "⚠️ Неверное ФИО. Попробуй ещё раз.")
+        return
+
+    db = load_db()
+    if username not in db['allowed_users']:
+        bot.send_message(message.chat.id, "⚠️ Ученик не найден.")
+        return
+
+    db['allowed_users'][username] = new_fio
+    for uid, un in db['user_map'].items():
+        if un == username:
+            db['users'][uid] = new_fio
+    save_db(db)
+
+    bot.send_message(message.chat.id, f"✅ ФИО обновлено: <b>{new_fio}</b>", parse_mode='HTML')
+    admin_panel(message)
 
 # --- ОБРАБОТКА КНОПОК АДМИНА ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('choose_un_'))
