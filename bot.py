@@ -353,8 +353,10 @@ def process_add_user(message):
         username = parts[0].replace('@', '').lower()
         fio = parts[1]
 
+        # 🔑 КЛЮЧ: Получаем ID из Telegram по юзернейму
         try:
-            bot.get_chat(f"@{username}")
+            user_info = bot.get_chat(f"@{username}")
+            user_id = str(user_info.id)
         except:
             bot.send_message(message.chat.id, "❌ Пользователь с таким юзернеймом не найден в Telegram. Проверь опечатки!")
             return
@@ -364,10 +366,19 @@ def process_add_user(message):
             bot.send_message(message.chat.id, "⚠️ Этот ученик уже есть в базе!")
             return
 
+        # 💾 Сохраняем полную информацию (даже если /start не нажимал)
         db['allowed_users'][username] = fio
+        db['user_map'][user_id] = username      # ← Теперь бот знает ID!
+        db['users'][user_id] = fio               # ← Для статистики
         save_db(db)
 
-        bot.send_message(message.chat.id, f"✅ Ученик <b>{fio}</b> (@{username}) успешно добавлен в базу!", parse_mode='HTML')
+        # 📨 Отправляем приветствие ученику (даже если он ещё не писал боту)
+        try:
+            menu = get_admin_menu() if username in {"damikiri", "tolenova_a", "shotbikon"} else get_student_menu()
+            bot.send_message(user_id, f"👋 Привет, <b>{fio}</b>!\n\nТебя добавили в систему отмечания 📝\n\n✅ Теперь ты можешь:\n• 📝 Отметиться на уроке\n• 👤 Посмотреть свой профиль\n• 🆘 Получить помощь\n\n⏰ Напоминание: отметиться можно с 8:00 до 9:00 каждый день!", reply_markup=menu, parse_mode='HTML')
+            bot.send_message(message.chat.id, f"✅ Ученик <b>{fio}</b> (@{username}) добавлен!\n🔔 Приветствие отправлено в ЛС", parse_mode='HTML')
+        except Exception as e:
+            bot.send_message(message.chat.id, f"⚠️ Ученик <b>{fio}</b> (@{username}) добавлен в базу, но не удалось отправить приветствие в ЛС.\n\n❓ Возможные причины:\n• Приватный чат заблокирован\n• Блокировка бота\n\n💡 Попросите ученика написать боту /start", parse_mode='HTML')
         admin_panel(message)
 
     except Exception as e:
