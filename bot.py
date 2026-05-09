@@ -11,7 +11,7 @@ import threading
 # --- НАСТРОЙКИ ВРЕМЕНИ ---
 TIMEZONE = pytz.timezone('Asia/Almaty')
 REMINDER_TIME = "08:00"
-MARK_START = 7  # Час начала отметки
+MARK_START = 8  # Час начала отметки
 MARK_END = 9    # Час окончания отметки
 
 def get_today():
