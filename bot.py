@@ -7,6 +7,7 @@ import pytz
 import schedule
 import time
 import threading
+import holidays
 
 # --- НАСТРОЙКИ ВРЕМЕНИ ---
 TIMEZONE = pytz.timezone('Asia/Almaty')
@@ -18,6 +19,34 @@ def get_today():
     now = datetime.now(TIMEZONE)
     days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     return days[now.weekday()]
+
+# --- ПРОВЕРКА ВЫХОДНЫХ И ПРАЗДНИКОВ ---
+def is_weekend_or_holiday():
+    """Проверяет, является ли сегодня выходным днём или праздником в Казахстане"""
+    now = datetime.now(TIMEZONE)
+    today_date = now.date()
+    
+    # Проверка выходных (суббота и воскресенье)
+    if now.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+        return True, "выходной день (суббота/воскресенье)"
+    
+    # Проверка праздников Казахстана
+    kz_holidays = holidays.Kazakhstan(years=today_date.year)
+    if today_date in kz_holidays:
+        holiday_name = kz_holidays.get(today_date)
+        return True, f"государственный праздник ({holiday_name})"
+    
+    return False, ""
+
+def get_holiday_info():
+    """Возвращает информацию о сегодняшнем дне"""
+    now = datetime.now(TIMEZONE)
+    today_date = now.date()
+    is_holiday, reason = is_weekend_or_holiday()
+    
+    if is_holiday:
+        return f"🚫 <b>Сегодня {reason}.</b> Отметка недоступна."
+    return None
 
 # --- НАСТРОЙКИ БОТА ---
 TOKEN = '8798484496:AAFXcnWcdKVv3RE31DqN4CKOQUZ47hqhpvs'
@@ -172,6 +201,12 @@ def mark_self(message):
     db = load_db()
     if uid not in db['users']: return
 
+    # НОВОЕ: Проверка выходных и праздников
+    is_holiday, reason = is_weekend_or_holiday()
+    if is_holiday:
+        bot.send_message(message.chat.id, f"🚫 <b>Сегодня {reason}.</b>\nОтметка недоступна в выходные дни и праздники!", parse_mode='HTML')
+        return
+
     # НОВОЕ: Проверка времени (07:00 - 09:00)
     now = datetime.now(TIMEZONE)
     if not (MARK_START <= now.hour < MARK_END):
@@ -197,6 +232,13 @@ def set_student_status(message):
     uid = str(message.from_user.id)
     db = load_db()
     day = get_today()
+
+    # НОВОЕ: Проверка выходных и праздников
+    is_holiday, reason = is_weekend_or_holiday()
+    if is_holiday:
+        bot.send_message(message.chat.id, f"🚫 <b>Сегодня {reason}.</b>\nОтметка недоступна!", parse_mode='HTML', 
+                         reply_markup=get_admin_menu() if is_admin(uid) else get_student_menu())
+        return
 
     # Защита: Проверка времени и повторной отметки
     now = datetime.now(TIMEZONE)
@@ -595,6 +637,13 @@ def choose_student(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_'))
 def set_status(call):
     if not is_admin(call.from_user.id): return
+    
+    # НОВОЕ: Проверка выходных и праздников
+    is_holiday, reason = is_weekend_or_holiday()
+    if is_holiday:
+        bot.answer_callback_query(call.id, f"🚫 Сегодня {reason}. Отметка недоступна!", show_alert=True)
+        return
+    
     parts = call.data.split('_')
     student_uid = parts[1]
     status = parts[2]
@@ -662,9 +711,12 @@ def send_morning_reminder():
     db = load_db()
     today = get_today()
     
-    if today in ["Суббота", "Воскресенье"]:
+    # НОВОЕ: Проверка выходных и праздников
+    is_holiday, reason = is_weekend_or_holiday()
+    if is_holiday:
+        print(f"Рассылка пропущена: сегодня {reason}")
         return
-
+    
     print(f"Рассылка напоминаний на {today}...")
 
     for uid in db['user_map'].keys():
